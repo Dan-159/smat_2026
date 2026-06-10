@@ -1,8 +1,8 @@
 from fastapi import Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-import models  
-from schemas import EstacionCreate, LecturaCreate, LoginPayload
+from . import models  
+from .schemas import EstacionCreate, LecturaCreate, LoginPayload
 #-----Funciones CRUD para usuarios-----
 def crear_usuario(db: Session, datos_usuario: LoginPayload):
     nuevo_usuario = models.UsuariosDB(nombre=datos_usuario.username, contraseña=datos_usuario.password)

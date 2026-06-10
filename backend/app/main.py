@@ -2,10 +2,10 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
-from schemas import EstacionCreate, LecturaCreate, LoginPayload
-import crud, models
-from database import engine, get_db
-from auth import crear_token_acceso, obtener_identidad_actual
+from .schemas import EstacionCreate, LecturaCreate, LoginPayload
+from . import crud, models
+from .database import engine, get_db
+from .auth import crear_token_acceso, obtener_identidad_actual
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
