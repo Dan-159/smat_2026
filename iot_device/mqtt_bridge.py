@@ -1,37 +1,106 @@
 import paho.mqtt.client as mqtt
 import requests
 import json
-# CONFIGURACIÓN
-BROKER = "broker.hivemq.com"
-TOPIC = "fisi/smat/estaciones/#" # Escucha todas las estaciones
+import sys
+import time
+
+# CONFIGURACIÓN DEL ENTORNO SMAT
+MQTT_BROKER = "broker.hivemq.com"
+MQTT_PORT = 1883
+MQTT_TOPIC = "fisi/smat/estaciones/+/lecturas"
 API_URL = "http://localhost:8000/lecturas/"
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhcnJveiIsImV4cCI6MTc4MTA1MTk2NX0.q2JCEkx6T9ZdDAzM--F8rP7PrDNHELMDJ3xAJQC0VEM" # Token de un usuario con permisos
+
+JWT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhcnJveiIsImV4cCI6MTc4MTExMjExNX0.pSCYvGnP2n04DC_NZ0NGq80G__RXYviw88oq8dwwkoA"
+
+# -------------------------------
+# MEMORIA CACHÉ LOCAL
+# -------------------------------
+last_values = {}   # {estacion_id: ultimo_valor}
+last_times = {}    # {estacion_id: timestamp}
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("🟢 Conectado exitosamente al Broker MQTT")
+        client.subscribe(MQTT_TOPIC)
+        print(f"📡 Escuchando: {MQTT_TOPIC}")
+    else:
+        print(f"🔴 Error conexión MQTT: {rc}")
+        sys.exit(1)
+
+def should_send(estacion_id, new_value):
+    now = time.time()
+
+    last_value = last_values.get(estacion_id)
+    last_time = last_times.get(estacion_id)
+
+    # Si nunca se ha enviado → enviar
+    if last_value is None:
+        return True
+
+    # Cambio porcentual
+    change = abs(new_value - last_value) / last_value * 100
+
+    # Condición 1: cambio mayor al 5%
+    if change > 5:
+        return True
+
+    # Condición 2: más de 60 segundos sin envío
+    if last_time is None or (now - last_time) > 60:
+        return True
+
+    return False
+
 def on_message(client, userdata, msg):
     try:
-        # 1. Decodificar el mensaje MQTT
-        payload = json.loads(msg.payload.decode())
-        print(f"📩 Mensaje recibido en {msg.topic}: {payload}")
-        # 2. Extraer el ID de la estación desde el tópico
-        # Ejemplo: fisi/smat/estaciones/1 -> ID = 1
-        estacion_id = msg.topic.split('/')[-1]
-        # 3. Preparar los datos para el Backend
-        data_to_send = {
-        "valor": payload["valor"],
-        "estacion_id": int(estacion_id)
+        payload_raw = msg.payload.decode("utf-8")
+        data_json = json.loads(payload_raw)
+
+        topic_parts = msg.topic.split('/')
+        estacion_id = int(topic_parts[3])
+
+        valor = float(data_json["valor"])
+
+        print(f"📩 Recibido estación {estacion_id}: {valor}")
+
+        # -------------------------------
+        # FILTRO DE CAMBIO (DEADBAND)
+        # -------------------------------
+        if not should_send(estacion_id, valor):
+            print(f"⛔ BLOQUEADO por filtro (sin cambio significativo)")
+            return
+
+        # actualizar caché
+        last_values[estacion_id] = valor
+        last_times[estacion_id] = time.time()
+
+        api_payload = {
+            "valor": valor,
+            "estacion_id": estacion_id
         }
-        # 4. Enviar a la API mediante HTTP POST
-        headers = {"Authorization": f"Bearer {TOKEN}"}
-        response = requests.post(API_URL, json=data_to_send, headers=headers)
-        if response.status_code == 200:
-            print(f"✅ Dato persistido en DB para estación {estacion_id}")
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {JWT_TOKEN}"
+        }
+
+        response = requests.post(API_URL, json=api_payload, headers=headers)
+
+        if response.status_code in [200, 201]:
+            print(f"💾 ENVIADO a DB: estación {estacion_id} valor {valor}")
         else:
-            print(f"⚠️ Error API ({response.status_code}): {response.text}")
+            print(f"⚠️ ERROR API: {response.status_code} - {response.text}")
+
     except Exception as e:
-        print(f"❌ Error procesando mensaje: {e}")
-# Configuración del Cliente MQTT
-client = mqtt.Client()
-client.on_message = on_message
-print("🚀 Bridge SMAT iniciado. Esperando datos...")
-client.connect(BROKER, 1883)
-client.subscribe(TOPIC)
-client.loop_forever()
+        print(f"❌ Error Bridge: {e}")
+
+bridge_client = mqtt.Client()
+bridge_client.on_connect = on_connect
+bridge_client.on_message = on_message
+
+try:
+    print("🚀 Bridge con Deadband Filter iniciado...")
+    bridge_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    bridge_client.loop_forever()
+
+except KeyboardInterrupt:
+    print("\n🛑 Bridge detenido")
